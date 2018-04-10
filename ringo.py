@@ -27,6 +27,7 @@ ack_counter = 0
 acked_nos_lock = threading.Lock()
 acked_nos = {}
 ack_counter_lock = threading.Lock()
+last_rtt = {}  # map of host -> sequence number of last RTT received
 
 # threading helper class from https://stackoverflow.com/questions/323972/is-there-any-way-to-kill-a-thread-in-python
 class StoppableThread(threading.Thread):
@@ -60,7 +61,6 @@ class RttThread(StoppableThread):
             rtt_q_lock.acquire()
             addr, rtt_new = rtt_q.pop()
             rtt_q_lock.release()
-            print("Updating RTT matrix") 
             # check to see if we know about all these peers, if not get our RTT to them via ping
             if addr not in mt.rtt[mt.addr]: 
                 mt.ping(addr)
@@ -92,7 +92,7 @@ class CliThread(StoppableThread):
                 if len(command) != 2:
                     print('Usage: offline <T>')
                 else:
-                    pass  # TODO
+                    mt.go_offline(int(command[1]))
             elif command[0] == 'send':
                 if len(command) != 2:
                     print('Usage: send <filename>')
@@ -112,11 +112,20 @@ class MainThread(StoppableThread):
     def __init__(self, flag, local_port, poc, n):
         StoppableThread.__init__(self)
         self.name = "Main"
-        self.daemon = True
         self.flag = flag
         self.addr = (socket.gethostbyname(socket.gethostname()), int(local_port))
         self.poc = poc
         self.n = n
+        self.online = threading.Event()
+        self.online.set()
+        self.reset()
+
+    def reset(self):
+        global acked_nos, last_ping, pinged_at, rtt_q
+        acked_nos = {}
+        last_ping = {}
+        pinged_at = {}
+        rtt_q = []
         self.ringos = []
         self.ring = []
         self.rtt = {
@@ -125,14 +134,6 @@ class MainThread(StoppableThread):
 
     def run(self):
         global rtt_q, rtt_q_avail
-        self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        try:
-            self.sock.bind(self.addr)
-        except:
-            print("Could not bind to %s:%d\n" % self.addr)
-            return
-        print("Ringo running on %s:%d\n" % self.addr)
 
         self.keepalive_thread = KeepAliveThread()
         self.keepalive_thread.start()
@@ -141,50 +142,73 @@ class MainThread(StoppableThread):
         self.cli_thread = CliThread()
         self.cli_thread.start()
 
-        if self.poc != ('0', 0):
-            self.sendto("HELO", self.poc)
-
         while True:
-            message, addr = self.sock.recvfrom(2048)
-            message = message.rstrip("\r\n")
-            parts = message.split(' ', 2)
-            seq_no, command = parts[0].split('~', 2)
-            seq_no = int(seq_no)
-            arguments = ''
+            self.online.wait()
 
-            if command != 'ACK':
-                self.sendto('ACK %d' % seq_no, addr, False)
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                self.sock.bind(self.addr)
+            except:
+                print("Could not bind to %s:%d\n" % self.addr)
+                return
+            print("Ringo running on %s:%d\n" % self.addr)
 
-            if len(parts) > 1:
-                arguments = parts[1]
+            if self.poc != ('0', 0):
+                self.sendto("HELO", self.poc)
 
-            print("%s:%d\t(%d)\t-->\t%s %s" % (addr[0], addr[1], seq_no, command, arguments))
-    
-            if command == "HELO":  # send RTT vector and PING to add to RTT vector
-                self.ping(addr)
-                self.send_rtt(addr)
-            elif command == "PING":  # reply with PONG
-                self.sendto("PONG %s" % (arguments), addr)
-            elif command == "PONG":  # reset this guy's ping timer
-                last_ping[(addr[0], int(addr[1]))] = time.time()*1000
-                if addr not in self.rtt[self.addr]:
-                    self.rtt[self.addr][addr] = last_ping[addr] - pinged_at[addr]
-                    self.broadcast_rtt()
-            elif command == "RTT":
-                rtt_q_lock.acquire()  # queue RTT vector for investigation
-                rtt_q.append(tuple([addr, arguments]))
-                rtt_q_lock.release()
-                rtt_q_sema.release()
-            elif command == "FILE":
-                pass
-            elif command == "ACK":
-                acked_nos_lock.acquire()
-                acked_nos[int(arguments)] = True
-                acked_nos_lock.release()
-            elif command == "BYE":
-                pass
-            else:
-                pass
+            while self.online.is_set():
+                try:
+                    message, addr = self.sock.recvfrom(2048)
+                except:
+                    pass
+                if not self.online.is_set():
+                    break
+                message = message.rstrip("\r\n")
+                parts = message.split(' ', 2)
+                seq_no, command = parts[0].split('~', 2)
+                seq_no = int(seq_no)
+                arguments = ''
+
+                if command != 'ACK':
+                    self.sendto('ACK %d' % seq_no, addr, False)
+
+                if len(parts) > 1:
+                    arguments = parts[1]
+
+                print("%s:%d\t(%d)\t-->\t%s %s" % (addr[0], addr[1], seq_no, command, arguments))
+        
+                if command == "HELO":  # send RTT vector and PING to add to RTT vector
+                    self.ping(addr)
+                    self.send_rtt(addr)
+                elif command == "PING":  # reply with PONG
+                    self.sendto("PONG %s" % (arguments), addr)
+                    self.send_rtt(addr)
+                elif command == "PONG":  # reset this guy's ping timer
+                    last_ping[(addr[0], int(addr[1]))] = time.time()*1000
+                    if addr not in self.rtt[self.addr]:
+                        self.rtt[self.addr][addr] = last_ping[addr] - pinged_at[addr]
+                        self.broadcast_rtt()
+                elif command == "RTT":
+                    if addr in last_rtt and last_rtt[addr] > seq_no and (last_rtt[addr] % MAX_ACK) - (seq_no % MAX_ACK) < 100:
+                        #  this is out of order, we have a newer RTT
+                        pass
+                    else:
+                        last_rtt[addr] = seq_no
+                        rtt_q_lock.acquire()  # queue RTT vector for investigation
+                        rtt_q.append(tuple([addr, arguments]))
+                        rtt_q_lock.release()
+                        rtt_q_sema.release()
+                elif command == "FILE":
+                    pass
+                elif command == "ACK":
+                    acked_nos_lock.acquire()
+                    acked_nos[int(arguments)] = True
+                    acked_nos_lock.release() 
+                elif command == "BYE":
+                    pass
+                else:
+                    pass
 
     def sendto(self, message, dest, expect_ack=True):
         global acked_nos, ack_counter
@@ -202,9 +226,28 @@ class MainThread(StoppableThread):
             t = threading.Timer(ACK_TIMEOUT / 1000, self.check_ack, [message, dest, i])
             t.start()
         
+    def go_offline(self, seconds):
+        self.online.clear()
+        self.sock.setblocking(0)
+        try:
+            self.sock.shutdown(socket.SHUT_RDWR)
+        except:
+            pass
+        self.sock.close()
+        self.reset()
+        print("Going offline for %d seconds" % seconds)
+        t = threading.Timer(seconds, self.go_online)
+        t.start()
+
+    def go_online(self):
+        print("Back online")
+        self.online.set()
+
     def check_ack(self, message, dest, i):
         global ack_counter, acked_nos, MAX_ACK, ACK_TIMEOUT
-        if not acked_nos[i] or not acked_nos[i]:
+        if i not in acked_nos:
+            pass
+        elif not acked_nos[i]:
             self.sendto(message, dest)
 
     def ping(self, addr):

@@ -28,6 +28,8 @@ All packets except for data packets are transmitted as ASCII strings following t
 
 `[Sequence Number]~[Command] [Arguments]\r\n`
 
+The sequence number begins at 0 and rolls over once it reaches 2048. Each Ringo has an independent sequence.
+
 ### Hello Message
 
 A client sends an initial message to a POC. Upon receiving this message, the POC will send the client a copy if its RTT Vector.
