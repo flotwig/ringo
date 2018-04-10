@@ -6,8 +6,8 @@ import os
 from random import randint
 
 ## Zach Bloomquist <bloomquist@gatech.edu>
-## Ringo Project Milestone-2
-## 16 March 2018
+## Ringo Project Milestone-3
+## 12 April 2018
 ## Networking 1 @ Georgia Tech
 
 PING_TIMEOUT = 15000  # ms
@@ -16,10 +16,17 @@ ring_lock = threading.Lock()
 rtt_lock = threading.Lock()
 rtt_q = []  # queue of pending rtt updates, as (from, raw RTT vector string) tuples
 rtt_q_lock = threading.Lock()
-rtt_q_avail = threading.Event()  # set if an update is pending
+rtt_q_sema = threading.Semaphore(0)  # set if an update is pending
 last_ping = {}
 pinged_at = {}
 mt = None
+
+MAX_ACK = 2048
+ACK_TIMEOUT = 2000 # ms
+ack_counter = 0
+acked_nos_lock = threading.Lock()
+acked_nos = {}
+ack_counter_lock = threading.Lock()
 
 # threading helper class from https://stackoverflow.com/questions/323972/is-there-any-way-to-kill-a-thread-in-python
 class StoppableThread(threading.Thread):
@@ -47,12 +54,13 @@ class RttThread(StoppableThread):
     name = "Rtt"
     def run(self):
         global mt, rtt_q, rtt_q_avail, rtt_q_lock, rtt_lock, ring_lock
-        while rtt_q_avail.wait():
+        while rtt_q_sema.acquire():
             if self.stopped():
                 return
             rtt_q_lock.acquire()
             addr, rtt_new = rtt_q.pop()
             rtt_q_lock.release()
+            print("Updating RTT matrix") 
             # check to see if we know about all these peers, if not get our RTT to them via ping
             if addr not in mt.rtt[mt.addr]: 
                 mt.ping(addr)
@@ -64,16 +72,14 @@ class RttThread(StoppableThread):
                     raddr = (rtt[0], int(rtt[1]))
                     row[raddr] = int(rtt[2])  # generate update for RTT matrix
                     if raddr != mt.addr and raddr not in mt.rtt[mt.addr]:  # new peer
-                        mt.ping(tuple(raddr))
+                        mt.ping(raddr)
                 rtt_lock.acquire()
                 mt.rtt[addr] = row
                 rtt_lock.release()
-            if len(rtt_q) == 0:  # finished sending out pings
-                rtt_q_avail.clear()
-                ring_lock.acquire()  # non-optimal ring
-                mt.ring = mt.rtt[mt.addr].keys()
-                mt.ring.insert(0, mt.addr)
-                ring_lock.release()
+            ring_lock.acquire()  # non-optimal ring
+            mt.ring = mt.rtt[mt.addr].keys()
+            mt.ring.insert(0, mt.addr)
+            ring_lock.release()
 
 
 class CliThread(StoppableThread):
@@ -142,13 +148,17 @@ class MainThread(StoppableThread):
             message, addr = self.sock.recvfrom(2048)
             message = message.rstrip("\r\n")
             parts = message.split(' ', 2)
-            command = parts[0]
+            seq_no, command = parts[0].split('~', 2)
+            seq_no = int(seq_no)
             arguments = ''
+
+            if command != 'ACK':
+                self.sendto('ACK %d' % seq_no, addr, False)
 
             if len(parts) > 1:
                 arguments = parts[1]
 
-            print("%s:%d\t-->\t%s" % (addr[0], addr[1], message))
+            print("%s:%d\t(%d)\t-->\t%s %s" % (addr[0], addr[1], seq_no, command, arguments))
     
             if command == "HELO":  # send RTT vector and PING to add to RTT vector
                 self.ping(addr)
@@ -162,21 +172,40 @@ class MainThread(StoppableThread):
                     self.broadcast_rtt()
             elif command == "RTT":
                 rtt_q_lock.acquire()  # queue RTT vector for investigation
-                rtt_q.append((addr, arguments))
+                rtt_q.append(tuple([addr, arguments]))
                 rtt_q_lock.release()
-                rtt_q_avail.set()
+                rtt_q_sema.release()
             elif command == "FILE":
                 pass
             elif command == "ACK":
-                pass
+                acked_nos_lock.acquire()
+                acked_nos[int(arguments)] = True
+                acked_nos_lock.release()
             elif command == "BYE":
                 pass
             else:
                 pass
 
-    def sendto(self, message, dest):
-        print("%s:%d\t<--\t%s" % (dest[0], int(dest[1]), message))
-        self.sock.sendto("%s\r\n" % (message), (dest[0], int(dest[1])))
+    def sendto(self, message, dest, expect_ack=True):
+        global acked_nos, ack_counter
+
+        ack_counter_lock.acquire()
+        i = ack_counter
+        ack_counter = (ack_counter + 1) % MAX_ACK
+        ack_counter_lock.release()
+
+        print("%s:%d\t(%d)\t<--\t%s" % (dest[0], int(dest[1]), i, message))
+        self.sock.sendto("%d~%s\r\n" % (i, message), (dest[0], int(dest[1])))
+
+        if expect_ack:
+            acked_nos[i] = False
+            t = threading.Timer(ACK_TIMEOUT / 1000, self.check_ack, [message, dest, i])
+            t.start()
+        
+    def check_ack(self, message, dest, i):
+        global ack_counter, acked_nos, MAX_ACK, ACK_TIMEOUT
+        if not acked_nos[i] or not acked_nos[i]:
+            self.sendto(message, dest)
 
     def ping(self, addr):
         global PING_TIMEOUT

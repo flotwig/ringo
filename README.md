@@ -34,4 +34,4 @@ See DESIGN.md for detailed designs of this project.
 * Current ring algorithm is not optimal
 * Doesn't deal gracefully with losing nodes
 * "disconnect" command is rough around the edges, just kills process
-* Actually haven't been able to test on GT Network because I can't get VPN working on Ubuntu, oops
+* Haven't tested using hostnames instead of IPs

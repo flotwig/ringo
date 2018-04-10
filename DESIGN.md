@@ -24,22 +24,26 @@ The following timing diagram depicts what happens to an existing 3-Ringo ring wh
 
 ## Packet Structure
 
+All packets except for data packets are transmitted as ASCII strings following this format:
+
+`[Sequence Number]~[Command] [Arguments]\r\n`
+
 ### Hello Message
 
 A client sends an initial message to a POC. Upon receiving this message, the POC will send the client a copy if its RTT Vector.
 
 Example:  
-`HELO\r\n`
+`HELO`
 
 ### Keep-Alive
 
 A Keep-Alive packet must be sent by every Ringo to every other Ringo directly every 15 seconds. This packet is just an ASCII string:
 
-`PING\r\n`
+`PING`
 
 In response, the pinged Ringo must send the pinging Ringo an ASCII string:
 
-`PONG\r\n`
+`PONG`
 
 Measuring the round-trip time of this packet is used for RTT measurement for new hosts.
 
@@ -47,12 +51,12 @@ Measuring the round-trip time of this packet is used for RTT measurement for new
 
 Whenever a Ringo has information abouts its RTT to a new server, it may rebroadcast that information, in addition to all of its other RTT information, to all known peers via an RTT vector announcement. This takes the form of a dictionary of IP address and port to RTT measurement pairs, formatted as follows:
 
-`RTT <ip-address>:<port>:<rtt-measurement>\r\n`
+`RTT <ip-address>:<port>:<rtt-measurement>`
 
 The IP address is represented in dot-decimal notation and the RTT measurement is an integer quantity of milliseconds. This pair can be repeated multiple times separated by semicolons (`;`).
 
 Example:  
-`RTT 10.0.0.1:9001:100;10.0.0.2:9001:200\r\n`
+`RTT 10.0.0.1:9001:100;10.0.0.2:9001:200`
 
 This vector is also sent as a response to the Hello packet to inform new Ringos of the current known peer list.
 
@@ -60,25 +64,23 @@ This vector is also sent as a response to the Hello packet to inform new Ringos 
 
 A connection is established by sending a packet down the ring containing the filename and the number of bytes the file will be chunked into:
 
-`FILE <filename> <byte-count>\r\n`
+`FILE <filename> <byte-count>`
 
-Upon receiving a packet containing `ACK\r\n`, the sender will begin transmitting the data as 507-byte chunks with a 1-byte header containing the current sequence number, `0-255`. This sequence number is unsigned and may roll over. This means each UDP packet will be 508 bytes. The sender will transmit one packet at a time and wait for a corresponding `ACK` message from the receiver before sending the next packet.
+Upon receiving an ACK packet for this command, the sender will begin transmitting the data as 507-byte chunks with a 1-byte header containing the current sequence number, `0-255`. This sequence number is unsigned and may roll over. This means each UDP packet will be 508 bytes. The sender will transmit one packet at a time and wait for a corresponding `ACK` message from the receiver before sending the next packet.
 
 A data packet may be retransmitted if the sender detects a timeout.
 
 Once the data transfer is complete, the sender will terminate the connection by sending a single packet with the final sequence number:
 
-`BYE <sequence number>\r\n`
+`BYE`
 
 This hangup will also be retransmitted if acknowledgement times out.
 
 ### ACK
 
-A receiver may send the special unsequenced `ACK\r\n` packet to acknowledge that it is ready to receive the file indicated by a `FILE` request.
+Upon receiving a packet from the sender, the receiver must send an acknowledgment packet with the sequence number it has just received:
 
-Upon receiving a data packet from the sender, the receiver must send an acknowledgment packet with the contents of the first byte of the received packet, the sequence number:
-
-`ACK <sequence-number>\r\n`
+`ACK <sequence-number>`
 
 ## Algorithms
 
