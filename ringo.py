@@ -24,7 +24,6 @@ rtt_knowledge = {} # map of the addrs who have my RTT to the length of the RTT t
 last_ack = {}  # timestamp of last acknowledgment from node
 mt = None
 
-MAX_ACK = 2048
 ACK_TIMEOUT = 3000 # ms
 ack_counter = 0
 acked_nos_lock = threading.Lock()
@@ -62,7 +61,7 @@ class KeepAliveThread(StoppableThread):
             time.sleep(PING_TIMEOUT/1000)
             if self.stopped():
                 return
-            if self.addr not in last_ack or (time.time()*1000) - last_ack[self.addr] > PING_TIMEOUT:
+            if self.addr in last_ping and (time.time()*1000) - last_ping[self.addr] > PING_TIMEOUT:
                 print('%s:%d has gone offline' % self.addr)
                 mt.take_offline(self.addr)
 
@@ -113,7 +112,7 @@ class CliThread(StoppableThread):
                 if len(command) != 2:
                     print('Usage: send <filename>')
                 else:
-                    pass  # TODO
+                    mt.send_file(command[1])
             elif command[0] == 'show-matrix' or command[0] == 'm':
                 mt.print_matrix()
             elif command[0] == 'show-ring' or command[0] == 'r':
@@ -206,13 +205,13 @@ class MainThread(StoppableThread):
                     
                     if addr not in self.rtt[self.addr]:
                         rtt_lock.acquire()
-                        self.rtt[self.addr][addr] = last_ping[addr] - pinged_at[addr]
+                        self.rtt[self.addr][addr] = (last_ping[addr] - pinged_at[addr]) % ACK_TIMEOUT
                         rtt_lock.release()
                         self.broadcast_rtt()
                     else:
                         self.send_rtt(addr)
                 elif command == "RTT":
-                    if addr in last_rtt and last_rtt[addr] > seq_no and (last_rtt[addr] % MAX_ACK) - (seq_no % MAX_ACK) < 100:
+                    if addr in last_rtt and last_rtt[addr] > seq_no:
                         #  this is out of order, we have a newer RTT
                         pass
                     else:
@@ -224,6 +223,7 @@ class MainThread(StoppableThread):
                 elif command == "FILE":
                     pass
                 elif command == "ACK":
+                    last_ack[addr] = time.time()*1000
                     acked_nos_lock.acquire()
                     acked_nos[int(arguments)] = True
                     acked_nos_lock.release() 
@@ -238,7 +238,7 @@ class MainThread(StoppableThread):
         if ackno == 0:
             ack_counter_lock.acquire()
             i = ack_counter
-            ack_counter = (ack_counter + 1) % MAX_ACK
+            ack_counter = (ack_counter + 1)
             ack_counter_lock.release()
         else:
             i = ackno
@@ -250,6 +250,13 @@ class MainThread(StoppableThread):
             acked_nos[i] = False
             t = threading.Timer(ACK_TIMEOUT / 1000, self.check_ack, [message, dest, i])
             t.start()
+
+    def send_file(self, filename):
+        f = open(filename, 'rb')
+        whole_file = f.read()
+        total_size = len(whole_file)
+
+        print(whole_file)
         
     def go_offline(self, seconds):
         global ping_timers
@@ -273,16 +280,17 @@ class MainThread(StoppableThread):
         self.online.set()
 
     def check_ack(self, message, dest, i):
-        global ack_counter, acked_nos, MAX_ACK, ACK_TIMEOUT
+        global ack_counter, acked_nos, ACK_TIMEOUT
         if i not in acked_nos or (dest in last_ack and (time.time() * 1000) - last_ack[dest] > PING_TIMEOUT):
             pass
         elif not acked_nos[i]:
             if message[0:4] == 'PING':
-                self.ping(dest, True)
+                self.ping(dest)
             else:
                 self.sendto(message, dest, True, i)
         else:
-            last_ack[dest] = time.time()*1000
+            if message[0:3] == 'RTT':
+                rtt_knowledge[dest] = message.count(';') + 1
             del acked_nos[i]
 
     def begin_pinging(self, addr):
@@ -296,7 +304,8 @@ class MainThread(StoppableThread):
     def take_offline(self, addr):
         global pinged_at, last_ping, ping_timers, rtt_knowledge
         rtt_lock.acquire()
-        del self.rtt[addr]
+        if addr in self.rtt:
+            del self.rtt[addr]
         for fromaddr in self.rtt:
             if addr in self.rtt[fromaddr]:
                 del self.rtt[fromaddr][addr]
@@ -310,15 +319,17 @@ class MainThread(StoppableThread):
             del last_ping[addr]
         if addr in last_rtt:
             del last_rtt[addr]
+        if addr in last_ack:
+            del last_ack[addr]
         self.broadcast_rtt()
         self.recalculate_ring()
 
-    def ping(self, addr, resend=False):
+    def ping(self, addr):
         global PING_TIMEOUT
         addr = (addr[0], int(addr[1]))
         #if addr not in pinged_at or time.time() * 1000 - pinged_at[addr] > PING_TIMEOUT or resend:
         pinged_at[addr] = time.time() * 1000
-        self.sendto("PING", addr, True)
+        self.sendto("PING", addr)
 
     def recalculate_ring(self):
         global ring_lock
@@ -367,9 +378,11 @@ class MainThread(StoppableThread):
 
     def send_rtt(self, dest):
         global rtt_knowledge
+        if len(self.rtt[self.addr]) == 0:
+            return
         if dest in rtt_knowledge and len(self.rtt[self.addr]) == rtt_knowledge[dest]:
             return
-        rtt_knowledge[dest] = len(self.rtt[self.addr])
+        #rtt_knowledge[dest] = len(self.rtt[self.addr])
         self.sendto("RTT %s" %
             ";".join(
                 map(
@@ -399,8 +412,9 @@ class MainThread(StoppableThread):
             print("\t%s:%d" % addr)
 
     def disconnect(self):
-        #self.keepalive_thread.stop()
         # TODO stop all ping threads
+        for ping_timer in ping_timers:
+            ping_timers[ping_timer].stop()
         self.rtt_thread.stop()
         self.cli_thread.stop()
         self.stop()
