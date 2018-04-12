@@ -26,7 +26,7 @@ rtt_knowledge = {} # map of the addrs who have my RTT to the length of the RTT t
 last_ack = {}  # timestamp of last acknowledgment from node
 mt = None
 dack_received = threading.Event()
-last_dack = None
+last_dack = ('', -1)
 
 ACK_TIMEOUT = 3000 # ms
 ack_counter = 0
@@ -55,9 +55,16 @@ class SendingThread(StoppableThread):
         global last_dack
         while not self.stopped():
             dack_received.wait()
+            if self.stopped():
+                return
             # send the chunk with this seqno
             mt.sendraw(mt.chunks[last_dack[1]], mt.ring_next(), last_dack[1] + 1)
+            t = threading.Timer(ACK_TIMEOUT/1000, self.check_dack, [last_dack[1] + 1])
+            t.start()
             dack_received.clear()
+    def check_dack(self, i):
+        if last_dack[1] == i:  # last sent packet hasn't been acked, resend it
+            dack_received.set()
 
 class KeepAliveThread(StoppableThread):
     name = "KeepAlive"
@@ -256,7 +263,7 @@ class MainThread(StoppableThread):
                 elif command == 'DACK':
                     if (self.flag == 'S'):  # we've received an ACK from the receiver, notify the sender to continue
                         args = arguments.split(':', 3)
-                        if not last_dack or int(args[2]) > last_dack[1]: 
+                        if int(args[2]) > last_dack[1]: 
                             last_dack = ((args[0], int(args[1])), int(args[2]))
                             dack_received.set()
                     else:
