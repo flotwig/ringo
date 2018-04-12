@@ -3,6 +3,8 @@ import threading
 import sys
 import time
 import os
+import math
+import struct
 from random import randint
 
 ## Zach Bloomquist <bloomquist@gatech.edu>
@@ -23,6 +25,8 @@ pinged_at = {}
 rtt_knowledge = {} # map of the addrs who have my RTT to the length of the RTT they have
 last_ack = {}  # timestamp of last acknowledgment from node
 mt = None
+dack_received = threading.Event()
+last_dack = None
 
 ACK_TIMEOUT = 3000 # ms
 ack_counter = 0
@@ -46,6 +50,14 @@ class StoppableThread(threading.Thread):
     def stopped(self):
         return self._stop_event.is_set()
 
+class SendingThread(StoppableThread):
+    def run(self):
+        global last_dack
+        while not self.stopped():
+            dack_received.wait()
+            # send the chunk with this seqno
+            mt.sendraw(mt.chunks[last_dack[1]], mt.ring_next(), last_dack[1] + 1)
+            dack_received.clear()
 
 class KeepAliveThread(StoppableThread):
     name = "KeepAlive"
@@ -109,7 +121,9 @@ class CliThread(StoppableThread):
                 else:
                     mt.go_offline(int(command[1]))
             elif command[0] == 'send':
-                if len(command) != 2:
+                if mt.flag != 'S':
+                    print('Only the sender Ringo can send a file')
+                elif len(command) != 2:
                     print('Usage: send <filename>')
                 else:
                     mt.send_file(command[1])
@@ -143,6 +157,8 @@ class MainThread(StoppableThread):
         rtt_q = []
         rtt_knowledge = {}
         last_rtt = {}
+        self.sending = False
+        self.receiving = False
         self.ringos = []
         self.ring = []
         self.rtt = {
@@ -150,7 +166,7 @@ class MainThread(StoppableThread):
         }  # rtt[from][to]
 
     def run(self):
-        global rtt_q, rtt_q_avail, last_rtt
+        global rtt_q, rtt_q_avail, last_rtt, last_dack
 
         self.rtt_thread = RttThread()
         self.rtt_thread.start()
@@ -182,17 +198,19 @@ class MainThread(StoppableThread):
                 addr = (addr[0], int(addr[1]))
                 message = message.rstrip("\r\n")
                 parts = message.split(' ', 2)
-                seq_no, command = parts[0].split('~', 2)
-                seq_no = int(seq_no)
+                try:
+                    seq_no, command = parts[0].split('~', 2)
+                    seq_no = int(seq_no)
+                except:
+                    seq_no, command = (0, '')
                 arguments = ''
-
-                if command != 'ACK':
-                    self.sendto('ACK %d' % seq_no, addr, False)
-
                 if len(parts) > 1:
                     arguments = parts[1]
 
-                print("%s:%d\t(%d)\t-->\t%s %s" % (addr[0], addr[1], seq_no, command, arguments))
+                if command in ('HELO', 'PING', 'PONG', 'RTT', 'FILE', 'DACK', 'BYE'):
+                    self.sendto('ACK %d' % seq_no, addr, False)
+                    print("%s:%d\t(%d)\t-->\t%s %s" % (addr[0], addr[1], seq_no, command, arguments))
+
         
                 if command == "HELO":  # send RTT vector and PING to add to RTT vector
                     self.begin_pinging(addr)
@@ -221,7 +239,28 @@ class MainThread(StoppableThread):
                         rtt_q_lock.release()
                         rtt_q_sema.release()
                 elif command == "FILE":
-                    pass
+                    if (self.flag == 'R'):  # we've received a FILE from the sender, begin receiving
+                        self.sendto('DACK %s:%d:%d' % (self.addr[0], self.addr[1], 0), addr)
+                        args = arguments.split(';', 2)
+                        self.received = ''
+                        self.receive_filename = args[0]
+                        self.receive_bytes = int(args[1])
+                        self.receiving = True
+                    elif (self.flag == 'S'):  # FILE made it back around, there's no receiver
+                        print('There is no Receiver node in this ring, the file cannot be sent.')
+                        self.sending = False
+                        self.sending_thread.stop()
+                        dack_received.set()
+                    else:
+                        self.sendto('FILE %s' % (arguments), self.ring_cont(addr))
+                elif command == 'DACK':
+                    if (self.flag == 'S'):  # we've received an ACK from the receiver, notify the sender to continue
+                        args = arguments.split(':', 3)
+                        if not last_dack or int(args[2]) > last_dack[1]: 
+                            last_dack = ((args[0], int(args[1])), int(args[2]))
+                            dack_received.set()
+                    else:
+                        self.sendto('DACK %s' % (arguments), self.ring_cont(addr))
                 elif command == "ACK":
                     last_ack[addr] = time.time()*1000
                     acked_nos_lock.acquire()
@@ -230,7 +269,15 @@ class MainThread(StoppableThread):
                 elif command == "BYE":
                     pass
                 else:
-                    pass
+                    # data packet
+                    seq_no = struct.unpack('I', message[0:4])[0]
+                    data = message[4:]
+                    print("%s:%d\t[%d]\t-->\t[RAW DATA] %d bytes" % (addr[0], addr[1], seq_no, len(message)))
+                    if (self.flag == 'R'):
+                        self.sendto('DACK %s:%d:%d' % (self.addr[0], self.addr[1], seq_no), addr)
+                        print('Received ' + data)
+                    else:
+                        self.sendraw(data, self.ring_cont(addr), seq_no)
 
     def sendto(self, message, dest, expect_ack=True, ackno=0):
         global acked_nos, ack_counter
@@ -251,12 +298,27 @@ class MainThread(StoppableThread):
             t = threading.Timer(ACK_TIMEOUT / 1000, self.check_ack, [message, dest, i])
             t.start()
 
-    def send_file(self, filename):
-        f = open(filename, 'rb')
-        whole_file = f.read()
-        total_size = len(whole_file)
+    def sendraw(self, data, dest, seqno):
+        print("%s:%d\t[%d]\t<--\t[RAW DATA] %d bytes" % (dest[0], int(dest[1]), seqno, len(data) + 4))
+        self.sock.sendto(struct.pack('I', seqno) + data, dest)
 
-        print(whole_file)
+    def send_file(self, filename):
+        try:
+            f = open(filename, 'rb')
+            whole_file = f.read()
+        except:
+            print("Could not read file %s" % (filename))
+            return
+        self.total_size = len(whole_file)
+        self.chunks = []
+        CHUNK_SIZE = 400
+        for i in range(0, self.total_size, CHUNK_SIZE):
+            self.chunks.append(whole_file[i:i+CHUNK_SIZE])
+        self.sending = True
+        self.sendto('FILE %s;%d' % (filename, self.total_size), self.ring_next())
+        self.sending_thread = SendingThread()
+        self.sending_thread.start()
+
         
     def go_offline(self, seconds):
         global ping_timers
@@ -330,6 +392,20 @@ class MainThread(StoppableThread):
         #if addr not in pinged_at or time.time() * 1000 - pinged_at[addr] > PING_TIMEOUT or resend:
         pinged_at[addr] = time.time() * 1000
         self.sendto("PING", addr)
+
+    def ring_prev(self):
+        i = (self.ring.index(self.addr) - 1) % len(self.ring)
+        return self.ring[i]
+
+    def ring_next(self):
+        i = (self.ring.index(self.addr) + 1) % len(self.ring)
+        return self.ring[i]
+
+    def ring_cont(self, addr):
+        if addr != self.ring_prev():
+            return self.ring_prev()
+        else:
+            return self.ring_next()
 
     def recalculate_ring(self):
         global ring_lock

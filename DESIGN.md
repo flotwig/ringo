@@ -70,7 +70,7 @@ A connection is established by sending a packet down the ring containing the fil
 
 `FILE <filename>;<byte-count>`
 
-Upon receiving an ACK packet for this command, the sender will begin transmitting the data as 507-byte chunks with a 1-byte header containing the current sequence number, `0-255`. This sequence number is unsigned and may roll over. This means each UDP packet will be 508 bytes. The sender will transmit one packet at a time and wait for a corresponding `DACK` message from the receiver before sending the next packet.
+The receiver node will identify itself by responding back down the ring with a `DACK` packet containing its own address and the sequence number 0. The sender will begin transmitting the data as 506-byte chunks with a 2-byte header containing the current sequence number, `0-65536`. This sequence number  may roll over. This means each UDP packet will be 508 bytes. The sender will transmit one packet at a time and wait for a corresponding `DACK` message from the receiver before sending the next packet.
 
 A data packet may be retransmitted if the sender detects a timeout.
 
@@ -85,6 +85,12 @@ This hangup will also be retransmitted if acknowledgement times out.
 Upon receiving a packet from the sender, the receiver must send an acknowledgment packet with the sequence number it has just received:
 
 `ACK <sequence-number>`
+
+### DACK
+
+Data transmissions use a special "Data Acknowledgement" packet, to differentiate the in-ring traffic from the out-of-ring traffic:
+
+`DACK <IP>:<port>:<sequence-number>`
 
 ## Algorithms
 
