@@ -57,13 +57,16 @@ class SendingThread(StoppableThread):
             dack_received.wait()
             if self.stopped():
                 return
+            if len(mt.chunks) == last_dack[1]:
+                mt.stop_sending()
+                return
             # send the chunk with this seqno
             mt.sendraw(mt.chunks[last_dack[1]], mt.ring_next(), last_dack[1] + 1)
             t = threading.Timer(ACK_TIMEOUT/1000, self.check_dack, [last_dack[1] + 1])
             t.start()
             dack_received.clear()
     def check_dack(self, i):
-        if last_dack[1] == i:  # last sent packet hasn't been acked, resend it
+        if last_dack[1] <= i:  # last sent packet hasn't been acked, resend it
             dack_received.set()
 
 class KeepAliveThread(StoppableThread):
@@ -203,6 +206,7 @@ class MainThread(StoppableThread):
                 if not self.online.is_set():
                     break
                 addr = (addr[0], int(addr[1]))
+                raw_message = message
                 message = message.rstrip("\r\n")
                 parts = message.split(' ', 2)
                 try:
@@ -249,9 +253,10 @@ class MainThread(StoppableThread):
                     if (self.flag == 'R'):  # we've received a FILE from the sender, begin receiving
                         self.sendto('DACK %s:%d:%d' % (self.addr[0], self.addr[1], 0), addr)
                         args = arguments.split(';', 2)
-                        self.received = ''
                         self.receive_filename = args[0]
-                        self.receive_bytes = int(args[1])
+                        self.receive_bytes = 0
+                        self.receive_bytes_total = int(args[1])
+                        self.received_chunks = {}
                         self.receiving = True
                     elif (self.flag == 'S'):  # FILE made it back around, there's no receiver
                         print('There is no Receiver node in this ring, the file cannot be sent.')
@@ -274,21 +279,26 @@ class MainThread(StoppableThread):
                     acked_nos[int(arguments)] = True
                     acked_nos_lock.release() 
                 elif command == "BYE":
-                    pass
+                    if (self.flag == 'R'):
+                        print('File received completely. Saving to disk.')
+                        self.receive_complete()
+                    else:
+                        self.sendto('BYE', self.ring_cont(addr))
                 else:
                     # data packet
-                    seq_no = struct.unpack('I', message[0:4])[0]
-                    data = message[4:]
-                    print("%s:%d\t[%d]\t-->\t[RAW DATA] %d bytes" % (addr[0], addr[1], seq_no, len(message)))
+                    seq_no = struct.unpack('I', raw_message[0:4])[0]
+                    data = raw_message[4:]
+                    print("%s:%d\t[%d]\t-->\t[RAW DATA] %d bytes" % (addr[0], addr[1], seq_no, len(raw_message)))
                     if (self.flag == 'R'):
                         self.sendto('DACK %s:%d:%d' % (self.addr[0], self.addr[1], seq_no), addr)
-                        print('Received ' + data)
+                        self.received_chunks[seq_no] = data
+                        self.receive_bytes += len(data)
+
                     else:
                         self.sendraw(data, self.ring_cont(addr), seq_no)
 
     def sendto(self, message, dest, expect_ack=True, ackno=0):
         global acked_nos, ack_counter
-
         if ackno == 0:
             ack_counter_lock.acquire()
             i = ack_counter
@@ -296,10 +306,8 @@ class MainThread(StoppableThread):
             ack_counter_lock.release()
         else:
             i = ackno
-
         print("%s:%d\t(%d)\t<--\t%s" % (dest[0], int(dest[1]), i, message))
         self.sock.sendto("%d~%s\r\n" % (i, message), (dest[0], int(dest[1])))
-
         if expect_ack and i not in acked_nos:
             acked_nos[i] = False
             t = threading.Timer(ACK_TIMEOUT / 1000, self.check_ack, [message, dest, i])
@@ -318,7 +326,7 @@ class MainThread(StoppableThread):
             return
         self.total_size = len(whole_file)
         self.chunks = []
-        CHUNK_SIZE = 400
+        CHUNK_SIZE = 452
         for i in range(0, self.total_size, CHUNK_SIZE):
             self.chunks.append(whole_file[i:i+CHUNK_SIZE])
         self.sending = True
@@ -326,7 +334,37 @@ class MainThread(StoppableThread):
         self.sending_thread = SendingThread()
         self.sending_thread.start()
 
-        
+    def stop_sending(self):
+        global last_dack
+        del self.total_size
+        del self.chunks
+        self.sending = False
+        self.sending_thread = None
+        last_dack = ('', -1)
+        self.sendto('BYE', self.ring_next())
+        dack_received.clear()
+
+    def receive_complete(self):
+        data = ''
+        for i in sorted(self.received_chunks.keys()):
+            data += self.received_chunks[i]
+        filename = self.receive_filename
+        i = 1
+        while os.path.isfile(filename):  # do not override existing file
+            filename = self.receive_filename + ('.%d' % (i))
+            i += 1
+        try:
+            f = open(filename, 'wb+')
+            f.write(data)
+            f.close()
+            print('%s successfully saved.' % (filename))
+        except:
+            print('There was an error saving %s to disk.' % (filename))
+        del self.receive_filename
+        del self.receive_bytes
+        del self.receive_bytes_total
+        del self.received_chunks
+    
     def go_offline(self, seconds):
         global ping_timers
         self.online.clear()
