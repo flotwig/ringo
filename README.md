@@ -1,7 +1,8 @@
-Ringo Milestone 2
+Ringo Milestone 3
 ========
 
 * Author: Zachary Bloomquist -- bloomquist@gatech.edu
+* Date: 12 April 2018
 
 ### Files
 
@@ -30,8 +31,4 @@ See DESIGN.md for detailed designs of this project.
 
 ### Bugs & Limitations
 
-* Doesn't check if peers are alive after initial ping because there's no churn
-* Current ring algorithm is not optimal
-* Doesn't deal gracefully with losing nodes
 * "disconnect" command is rough around the edges, just kills process
-* Haven't tested using hostnames instead of IPs

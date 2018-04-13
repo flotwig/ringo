@@ -4,5 +4,5 @@ scp ringo.py zbloomquist3@networklab4.cc.gatech.edu:~/ringo.py
 scp ringo.py zbloomquist3@networklab5.cc.gatech.edu:~/ringo.py
 scp ringo.py zbloomquist3@networklab6.cc.gatech.edu:~/ringo.py
 
-#scp ./images/ringo-join.jpg zbloomquist3@networklab2.cc.gatech.edu:~/test.jpg
-#scp ./images/ringo-join.jpg zbloomquist3@networklab6.cc.gatech.edu:~/test.jpg
+# scp test.bin zbloomquist3@networklab2.cc.gatech.edu:~/test.bin
+# scp test.bin zbloomquist3@networklab6.cc.gatech.edu:~/test.bin
