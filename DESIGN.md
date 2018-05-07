@@ -162,14 +162,3 @@ This thread is responsible for handling user input and for chunking up and sendi
 ### Sending
 
 This thread is short-lived, existing only for the duration that it takes to transmit a file. It is responsible for verifying `DACK`s and sending the next data chunk down the line in time. There are sub-threads created in this thread to track the `DACK`s and ensure the file is reliably delivered.
-
-<style type="text/css">
-    h2 {
-        page-break-before: always;
-    }
-    code {
-        border: 1px solid #848484;
-        border-radius: 2px;
-        padding: 2px 5px;
-    }
-</style>

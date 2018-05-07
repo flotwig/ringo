@@ -1,5 +1,7 @@
-Ringo Milestone 3
+Ringo
 ========
+
+A self-organizing and reliable ring network over UDP.
 
 * Author: Zachary Bloomquist -- bloomquist@gatech.edu
 * Date: 12 April 2018

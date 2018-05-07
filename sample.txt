@@ -1,42 +1,72 @@
-After starting up the first 2 Ringos:
+Invocation for 5 Ringos:
 
-[zbloomquist3@networklab3 ~]$ python ringo.py S 12221 0 0 5
-[zbloomquist3@networklab4 ~]$ python ringo.py S 13331 130.207.107.14 12221 5
+[zbloomquist3@networklab2 ~]$ python ringo.py S 13372 0 0 5
+[zbloomquist3@networklab3 ~]$ python ringo.py F 13373 networklab2.cc.gatech.edu 13372 5
+[zbloomquist3@networklab4 ~]$ python ringo.py F 13374 networklab3.cc.gatech.edu 13373 5
+[zbloomquist3@networklab5 ~]$ python ringo.py F 13375 networklab4.cc.gatech.edu 13374 5
+[zbloomquist3@networklab6 ~]$ python ringo.py R 13376 networklab2.cc.gatech.edu 13372 5
 
-This is what the 3rd one joining the ring looks like:
 
-[zbloomquist3@networklab3 ~]$ python ringo.py S 14441 130.207.107.15 13331 5
-Ringo running on 130.207.107.14:14441
-
-130.207.107.15:13331	<--	HELO
-130.207.107.15:13331	-->	RTT 130.207.107.14:12221:124
-130.207.107.15:13331	-->	PING
- 130.207.107.15:13331	<--	PING
-130.207.107.15:13331	<--	PONG 
- 130.207.107.14:12221	<--	PING
-130.207.107.14:12221	-->	PONG 
-130.207.107.14:12221	<--	RTT 130.207.107.14:12221:0
-130.207.107.14:12221	-->	PING
-130.207.107.14:12221	<--	PONG 
-130.207.107.14:12221	-->	RTT 130.207.107.15:13331:124;130.207.107.14:14441:0
-130.207.107.15:13331	-->	RTT 130.207.107.14:12221:124;130.207.107.14:14441:126
-130.207.107.15:13331	-->	PONG 
-130.207.107.14:12221	<--	RTT 130.207.107.14:12221:0;130.207.107.15:13331:116
-130.207.107.15:13331	<--	RTT 130.207.107.14:12221:0;130.207.107.15:13331:116
+Example matrix output:
 show-matrix
 Current RTT matrix:
-	RTT vector of 130.207.107.14:12221:
-		130.207.107.15:13331	124ms RTT
-		130.207.107.14:14441	0ms RTT
-	RTT vector of 130.207.107.15:13331:
-		130.207.107.14:12221	124ms RTT
-		130.207.107.14:14441	126ms RTT
-	RTT vector of 130.207.107.14:14441:
-		130.207.107.14:12221	0ms RTT
-		130.207.107.15:13331	116ms RTT
+        RTT vector of 130.207.107.16:13375:
+                130.207.107.14:13373    61ms RTT
+                130.207.107.13:13372    36ms RTT
+                130.207.107.17:13376    74ms RTT
+                130.207.107.15:13374    58ms RTT
+        RTT vector of 130.207.107.13:13372:
+                130.207.107.14:13373    56ms RTT
+                130.207.107.17:13376    62ms RTT
+                130.207.107.16:13375    29ms RTT
+                130.207.107.15:13374    37ms RTT
+        RTT vector of 130.207.107.17:13376:
+                130.207.107.13:13372    61ms RTT
+                130.207.107.14:13373    88ms RTT
+                130.207.107.16:13375    73ms RTT
+                130.207.107.15:13374    86ms RTT
+        RTT vector of 130.207.107.14:13373:
+                130.207.107.13:13372    48ms RTT
+                130.207.107.17:13376    90ms RTT
+                130.207.107.16:13375    56ms RTT
+                130.207.107.15:13374    75ms RTT
+        RTT vector of 130.207.107.15:13374:
+                130.207.107.14:13373    69ms RTT
+                130.207.107.13:13372    37ms RTT
+                130.207.107.17:13376    81ms RTT
+                130.207.107.16:13375    54ms RTT
+
+
+Example ring output:
 show-ring
 Current ring:
-	130.207.107.14:14441
-	130.207.107.14:12221
-	130.207.107.15:13331
+        130.207.107.17:13376
+        130.207.107.15:13374
+        130.207.107.13:13372
+        130.207.107.16:13375
+        130.207.107.14:13373
 
+
+Example transmission output (from sender):
+send ringo.py                                                                                                      
+130.207.107.16:13375    (133)   <--     FILE ringo.py;22804                             
+130.207.107.16:13375    (108)   -->     DACK 130.207.107.17:13376:0                     
+130.207.107.16:13375    [1]     <--     [RAW DATA] 2052 bytes                           
+130.207.107.16:13375    (111)   -->     DACK 130.207.107.17:13376:1                     
+130.207.107.16:13375    [2]     <--     [RAW DATA] 2052 bytes       
+ [...]
+130.207.107.16:13375    (194)   -->     DACK 130.207.107.17:13376:12
+130.207.107.16:13375    (201)   <--     BYE
+
+
+Example transmission output (from receiver):
+130.207.107.14:13373    (131)   -->     FILE ringo.py;22804                             
+130.207.107.14:13373    (72)    <--     DACK 130.207.107.17:13376:0                     
+130.207.107.14:13373    (85)    <--     DACK 130.207.107.17:13376:1
+130.207.107.14:13373    [1]     -->     [RAW DATA] 2052 bytes (8.98% received)
+130.207.107.14:13373    (88)    <--     DACK 130.207.107.17:13376:2
+130.207.107.14:13373    [2]     -->     [RAW DATA] 2052 bytes (17.96% received)
+ [...]
+130.207.107.14:13373    [12]    -->     [RAW DATA] 280 bytes (100.00% received)
+130.207.107.14:13373    (220)   -->     BYE
+ringo.py.30 successfully saved.
